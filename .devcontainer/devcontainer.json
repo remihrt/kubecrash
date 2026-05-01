@@ -6,10 +6,11 @@
   },
   "postCreateCommand": "scripts/setup.sh",
   "mounts": [
-    "source=${localWorkspaceFolder}/.kube,target=/home/vscode/.kube,type=bind"
+    "source=${localWorkspaceFolder}/.kube,target=/home/vscode/.kube,type=bind",
+    "source=/home/${localEnv:USER}/.claude,target=/home/vscode/.claude,type=bind"
   ],
   "containerEnv": {
-    "SSH_AUTH_SOCK": "/ssh-agent"
+    "SSH_AUTH_SOCK": "/ssh-agent",
   },
   "runArgs": [
     "--network=host",

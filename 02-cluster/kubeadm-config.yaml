@@ -1,0 +1,17 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+# VIP managed by kube-vip — floats across control plane nodes
+controlPlaneEndpoint: "192.168.1.201:6443"
+networking:
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/12"
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+# First control plane node is archbook
+localAPIEndpoint:
+  advertiseAddress: "192.168.1.12"
+  bindPort: 6443
+nodeRegistration:
+  criSocket: unix:///var/run/containerd/containerd.sock
+  name: archbook
