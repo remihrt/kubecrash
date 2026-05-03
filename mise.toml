@@ -1,5 +1,6 @@
 [tools]
 cilium-cli = "latest"
 claude-code = "latest"
+flux2 = "latest"
 k9s = "latest"
 kubectl = "latest"
