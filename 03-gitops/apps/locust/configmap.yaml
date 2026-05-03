@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: locust-locustfile
+  namespace: locust
+data:
+  locustfile.py: |
+    from locust import HttpUser, task, between
+
+    class PodInfoUser(HttpUser):
+        wait_time = between(1, 2)
+
+        @task(5)
+        def get_root(self):
+            self.client.get("/")
+
+        @task(2)
+        def get_version(self):
+            self.client.get("/version")
+
+        @task(1)
+        def get_health(self):
+            self.client.get("/healthz")

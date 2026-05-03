@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: locust
+  namespace: locust
+  labels:
+    app: locust
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: locust
+  template:
+    metadata:
+      labels:
+        app: locust
+    spec:
+      containers:
+        - name: locust
+          image: locustio/locust:2.32.3
+          args:
+            - --host=http://podinfo.podinfo.svc.cluster.local:9898
+            - --web-port=8089
+            - --locustfile=/home/locust/locustfile.py
+          ports:
+            - name: web
+              containerPort: 8089
+              protocol: TCP
+          volumeMounts:
+            - name: locustfile
+              mountPath: /home/locust/locustfile.py
+              subPath: locustfile.py
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: locustfile
+          configMap:
+            name: locust-locustfile
