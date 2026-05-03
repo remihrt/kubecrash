@@ -83,6 +83,11 @@ install_debian() {
   apt-get update -q
   apt-get install -y kubelet kubeadm kubectl
   apt-mark hold kubelet kubeadm kubectl
+
+  # kubelet expects CNI plugins in /usr/lib/cni/ but Cilium installs to /opt/cni/bin/
+  mkdir -p /usr/lib/cni
+  ln -sf /opt/cni/bin/cilium-cni /usr/lib/cni/cilium-cni
+  ln -sf /opt/cni/bin/loopback   /usr/lib/cni/loopback
 }
 
 install_arch() {
