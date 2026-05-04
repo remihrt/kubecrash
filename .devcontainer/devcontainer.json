@@ -7,7 +7,9 @@
   "postCreateCommand": "scripts/setup.sh",
   "mounts": [
     "source=${localWorkspaceFolder}/.kube,target=/home/vscode/.kube,type=bind",
-    "source=/home/${localEnv:USER}/.claude,target=/home/vscode/.claude,type=bind"
+    "source=${localWorkspaceFolder}/.ssh,target=/home/vscode/.ssh,type=bind",
+    "source=/home/${localEnv:USER}/.claude,target=/home/vscode/.claude,type=bind",
+    "source=/home/${localEnv:USER}/.claude.json,target=/home/vscode/.claude.json,type=bind"
   ],
   "containerEnv": {
     "SSH_AUTH_SOCK": "/ssh-agent",
