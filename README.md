@@ -10,12 +10,12 @@ No managed Kubernetes. No shortcuts. Just nodes, `kubeadm`, and chaos.
 
 | Hostname | IP | Hardware | OS | Role |
 |---|---|---|---|---|
-| archbook | 192.168.1.12 | MacBook Pro 2013 — Intel, 16 GB RAM, 512 GB SSD | Arch Linux | control-plane + worker |
-| homelab-0 | 192.168.1.10 | Raspberry Pi 5 — arm64, 4 GB RAM, 32 GB USB | Debian 13 (trixie) | control-plane + worker |
-| homelab-1 | 192.168.1.11 | Raspberry Pi 5 — arm64, 4 GB RAM, 32 GB USB | Debian 13 (trixie) | control-plane + worker |
-| macmini | 192.168.1.13 | Mac Mini M1 — Apple Silicon, 8 GB RAM, 128 GB SSD | Fedora Asahi Remix 43 | worker |
+| homelab-0 | 192.168.1.10 | Raspberry Pi 5 — arm64, 4 GB RAM, 32 GB USB | Debian 13 (trixie) | control-plane |
+| homelab-1 | 192.168.1.11 | Raspberry Pi 5 — arm64, 4 GB RAM, 32 GB USB | Debian 13 (trixie) | control-plane |
+| macmini | 192.168.1.13 | Mac Mini M1 — Apple Silicon, 8 GB RAM, 128 GB SSD | Fedora Asahi Remix 43 | control-plane |
+| archbook | 192.168.1.12 | MacBook Pro 2013 — Intel, 16 GB RAM, 512 GB SSD | Arch Linux | worker |
 
-3 control plane nodes form an etcd quorum — losing one node keeps the cluster alive. The mixed architectures (x86_64, arm64, aarch64) make multi-arch container images a real concern, not a theoretical one.
+The API server is exposed via kube-vip at `192.168.1.201` — the VIP floats between control-plane nodes using leader election. 3 control-plane nodes form an etcd quorum — losing one node keeps the cluster alive. The mixed architectures (x86_64, arm64, aarch64) make multi-arch container images a real concern.
 
 ## Structure
 
@@ -27,6 +27,9 @@ No managed Kubernetes. No shortcuts. Just nodes, `kubeadm`, and chaos.
   └── scripts/
       ├── node-setup.sh     Prerequisites for all nodes (multi-distro)
       └── kube-vip.sh       kube-vip static pod manifest generator
+03-gitops/    Flux v2 GitOps setup — cluster state declared as YAML
+04-chaos/     Intentional failure injection and observed recovery behavior
+  └── TODO.md               Chaos scenarios and results
 ```
 
 ## Philosophy

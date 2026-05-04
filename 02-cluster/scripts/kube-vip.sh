@@ -2,7 +2,7 @@
 # Generate the kube-vip static pod manifest.
 # Run as root on each control plane node BEFORE kubeadm init/join.
 #
-# Usage: sudo INTERFACE=eth0 VIP=192.168.1.201 bash kube-vip.sh
+# Usage: sudo INTERFACE=eth0|wlan0 VIP=192.168.1.201 bash kube-vip.sh
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
@@ -36,7 +36,7 @@ ctr run --rm --net-host "ghcr.io/kube-vip/kube-vip:${KVVERSION}" vip \
 # super-admin.conf has direct system:masters access and works immediately.
 # Only patch the hostPath (source on the host), not the mountPath (path inside the container).
 # kube-vip looks for the kubeconfig at /etc/kubernetes/admin.conf inside the container.
-sed -i 's|path: /etc/kubernetes/admin.conf|path: /etc/kubernetes/super-admin.conf|g' \
-  /etc/kubernetes/manifests/kube-vip.yaml
+# sed -i 's|path: /etc/kubernetes/admin.conf|path: /etc/kubernetes/super-admin.conf|g' \
+#   /etc/kubernetes/manifests/kube-vip.yaml
 
 echo "Manifest written to /etc/kubernetes/manifests/kube-vip.yaml"
