@@ -161,3 +161,145 @@ ssh homelab-0 "sudo iptables -D INPUT -s 192.168.1.11 -j DROP && \
 `homelab-0` held the VIP. Partition created a 1-vs-2 split.
 
 **Result**: cluster survived. Majority side (`homelab-1` + `macmini`) kept Raft quorum and claimed the VIP. `homelab-0` etcd stalled (1/3, below quorum). On heal, `homelab-0` etcd replayed missed entries automatically.
+
+---
+
+## Level 5 — Storage & Data Recovery
+
+### etcd snapshot + restore
+
+Full disaster recovery: wipe all etcd data across every member and restore from a snapshot. This proves you can bring a cluster back from complete data loss.
+
+The experiment has two scenarios back to back:
+
+- **Scenario A** — restore recovers deleted resources (snapshot taken *before* deletion)
+- **Scenario B** — restore discards rogue resources (snapshot taken *before* they were created)
+
+Run Scenario A to learn the muscle memory, then Scenario B if you want to observe the inverse.
+
+#### Step 1 — Take a snapshot
+
+Run from the devcontainer. etcdctl runs inside the pod; save to `/var/lib/etcd/` which is bind-mounted so the file lands on the host filesystem at the same path.
+
+```bash
+kubectl exec -n kube-system etcd-homelab-0 -- etcdctl \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key \
+  snapshot save /var/lib/etcd/snapshot.db
+
+# verify (snapshot status moved to etcdutl in etcd v3.6)
+kubectl exec -n kube-system etcd-homelab-0 -- etcdutl \
+  snapshot status /var/lib/etcd/snapshot.db -w table
+```
+
+Copy the snapshot to the devcontainer (scp works because `/var/lib/etcd` is on the host, not inside the container), then push to the other nodes' host:
+
+```bash
+ssh -t homelab-0 "sudo cp /var/lib/etcd/snapshot.db etcd-snapshot.db && sudo chown remi:remi etcd-snapshot.db" && \
+scp homelab-0:~/etcd-snapshot.db . && \
+scp etcd-snapshot.db homelab-1:~/ && \
+scp etcd-snapshot.db macmini:~/
+```
+
+#### Step 2 — Create a canary resource (Scenario A)
+
+Create something after the snapshot so you can prove it disappears on restore:
+
+```bash
+kubectl create configmap chaos-canary --from-literal=msg="this should vanish after restore"
+kubectl get configmap chaos-canary
+```
+
+#### Step 3 — Stop etcd and kube-apiserver on all members
+
+Move static pod manifests away so kubelet tears down the containers. Do all three nodes before anything has time to react.
+
+```bash
+for node in homelab-0 homelab-1 macmini; do
+  ssh -t $node "sudo mv /etc/kubernetes/manifests/etcd.yaml /tmp/etcd.yaml.bak && \
+             sudo mv /etc/kubernetes/manifests/kube-apiserver.yaml /tmp/kube-apiserver.yaml.bak"
+done
+```
+
+Wait ~10s, then confirm the processes are gone:
+
+```bash
+for node in homelab-0 homelab-1 macmini; do
+  ssh -t $node "sudo crictl ps 2>/dev/null | grep -E 'etcd|apiserver' || echo '$node: clear'"
+done
+```
+
+#### Step 4 — Wipe all etcd data
+
+```bash
+for node in homelab-0 homelab-1 macmini; do
+  ssh -t $node "sudo rm -rf /var/lib/etcd"
+done
+```
+
+There is no going back from this point without the snapshot.
+
+#### Step 5 — Restore the snapshot on each member
+
+Each member needs its own restore call with a unique `--name` and `--initial-advertise-peer-urls`. All three share the same `--initial-cluster` and a new `--initial-cluster-token` (different from the original forces a fresh cluster identity and prevents stale peers from interfering).
+
+```bash
+INITIAL_CLUSTER="homelab-0=https://192.168.1.10:2380,homelab-1=https://192.168.1.11:2380,macmini=https://192.168.1.13:2380"
+
+ssh -t homelab-0 "sudo etcdutl snapshot restore etcd-snapshot.db \
+  --name homelab-0 \
+  --initial-cluster ${INITIAL_CLUSTER} \
+  --initial-cluster-token etcd-cluster-restored \
+  --initial-advertise-peer-urls https://192.168.1.10:2380 \
+  --data-dir /var/lib/etcd"
+
+ssh -t homelab-1 "sudo etcdutl snapshot restore etcd-snapshot.db \
+  --name homelab-1 \
+  --initial-cluster ${INITIAL_CLUSTER} \
+  --initial-cluster-token etcd-cluster-restored \
+  --initial-advertise-peer-urls https://192.168.1.11:2380 \
+  --data-dir /var/lib/etcd"
+
+ssh -t macmini "sudo etcdutl snapshot restore etcd-snapshot.db \
+  --name macmini \
+  --initial-cluster ${INITIAL_CLUSTER} \
+  --initial-cluster-token etcd-cluster-restored \
+  --initial-advertise-peer-urls https://192.168.1.13:2380 \
+  --data-dir /var/lib/etcd"
+```
+
+#### Step 6 — Restart etcd and kube-apiserver
+
+Put the manifests back. kubelet picks them up within a few seconds.
+
+```bash
+for node in homelab-0 homelab-1 macmini; do
+  ssh -t $node "sudo mv /tmp/etcd.yaml.bak /etc/kubernetes/manifests/etcd.yaml && \
+             sudo mv /tmp/kube-apiserver.yaml.bak /etc/kubernetes/manifests/kube-apiserver.yaml"
+done
+```
+
+#### Step 7 — Verify recovery
+
+```bash
+# wait for apiserver to accept requests (~30s)
+while ! kubectl get nodes &>/dev/null; do echo "waiting..."; sleep 3; done
+
+kubectl get nodes
+kubectl get pods -A | grep -v Running  # any crashlooping?
+
+# Scenario A: canary should be GONE (created after the snapshot)
+kubectl get configmap chaos-canary && echo "UNEXPECTED: canary survived" || echo "OK: canary gone, restore worked"
+
+# etcd cluster health
+kubectl exec -n kube-system etcd-homelab-0 -- etcdctl \
+  --endpoints=https://192.168.1.10:2379,https://192.168.1.11:2379,https://192.168.1.13:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key \
+  endpoint health -w table
+```
+
+**Expected result**: all nodes Ready, etcd cluster healthy, canary ConfigMap absent.
