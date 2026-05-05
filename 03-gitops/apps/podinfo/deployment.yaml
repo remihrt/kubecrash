@@ -6,7 +6,7 @@ metadata:
   labels:
     app: podinfo
 spec:
-  replicas: 4
+  replicas: 12
   selector:
     matchLabels:
       app: podinfo
