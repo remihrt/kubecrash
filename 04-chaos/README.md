@@ -378,3 +378,88 @@ kubectl get nodes -w  # watch Ready condition return
 ```
 
 **Expected result**: `DiskPressure` clears, taint removed, node schedulable again. Previously evicted pods may or may not migrate back depending on scheduler decisions.
+
+---
+
+## Level 6 — TLS & Certificates
+
+### Certificate expiry + rotation
+
+The experiment focuses on the renewal workflow. Manually crafting expired certs with openssl is unreliable — kubeadm reads extensions from the existing cert file when renewing, so a hand-rolled cert missing `ExtendedKeyUsage` will break `kubeadm certs renew`. Instead, learn what an expired cert failure looks like, then practice the real recovery tool.
+
+#### What an expired apiserver-kubelet-client cert looks like
+
+`apiserver-kubelet-client` is the cert the apiserver presents to kubelets when proxying `kubectl logs` and `kubectl exec`. When it expires:
+
+- `kubectl get nodes` / `kubectl get pods` — still works (apiserver↔etcd path unaffected)
+- `kubectl logs` / `kubectl exec` — fails with a misleading error:
+  ```
+  error: You must be logged in to the server (the server has asked for the client to provide credentials)
+  ```
+  This is actually the kubelet returning 401 to the apiserver because it rejected the expired cert. The apiserver forwards it verbatim to kubectl.
+
+In an HA cluster the failure only appears on the specific node whose cert is expired. Routing through the VIP may hide it — connect directly to observe it:
+
+```bash
+kubectl --server=https://192.168.1.10:6443 logs -n podinfo deployment/podinfo  # fails
+kubectl logs -n podinfo deployment/podinfo                                       # works (VIP → other node)
+```
+
+#### Step 1 — Inspect current cert expiry
+
+```bash
+for cert in apiserver apiserver-kubelet-client apiserver-etcd-client front-proxy-client; do
+  echo "=== $cert ==="
+  ssh homelab-0 "openssl x509 -in /etc/kubernetes/pki/${cert}.crt -noout -dates"
+done
+```
+
+CA cert: 10-year validity. Component certs: 1 year, issued by kubeadm at cluster init.
+
+#### Step 2 — Renew all certs on every control plane node
+
+Run on each node. `kubeadm certs renew all` reissues every component cert signed by the existing CA — no CA rotation, no downtime at this step:
+
+```bash
+for node in homelab-0 homelab-1 macmini; do
+  ssh -t $node "sudo kubeadm certs renew all"
+done
+```
+
+Verify new expiry dates on one node:
+
+```bash
+ssh homelab-0 "openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -dates"
+```
+
+#### Step 3 — Restart control plane components to load new certs
+
+Kubeadm writes new cert files but running components hold the old certs in memory. Each component must be restarted. Do one node at a time to keep the cluster available during rotation.
+
+```bash
+for node in homelab-0 homelab-1 macmini; do
+  ssh $node "for f in /etc/kubernetes/manifests/*.yaml; do \
+    sudo mv \$f /tmp/ && sleep 5 && sudo mv /tmp/\$(basename \$f) /etc/kubernetes/manifests/; \
+  done"
+done
+```
+
+Wait for all components to recover between nodes:
+
+```bash
+kubectl get pods -n kube-system -w
+```
+
+#### Step 4 — Verify
+
+```bash
+# all components running
+kubectl get pods -n kube-system
+
+# logs and exec work on every node directly
+kubectl --server=https://192.168.1.10:6443 logs -n podinfo deployment/podinfo
+kubectl --server=https://192.168.1.11:6443 logs -n podinfo deployment/podinfo
+kubectl --server=https://192.168.1.13:6443 logs -n podinfo deployment/podinfo
+```
+
+**Expected result**: all certs show a new `notAfter` ~1 year out, all commands succeed on every node directly.
