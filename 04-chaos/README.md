@@ -303,3 +303,78 @@ kubectl exec -n kube-system etcd-homelab-0 -- etcdctl \
 ```
 
 **Expected result**: all nodes Ready, etcd cluster healthy, canary ConfigMap absent.
+
+---
+
+### Disk pressure eviction
+
+Trigger the kubelet's disk eviction manager by filling a node's filesystem past the hard eviction threshold (`nodefs.available < 10%`). Watch the kubelet set `DiskPressure`, taint the node, and evict pods by QoS class.
+
+Target: `archbook` (worker node, 32G disk, 8.6G free at 71% — needs ~6G filled to cross 90%).
+
+#### Step 1 — Baseline
+
+```bash
+# current disk state
+ssh archbook "df -h /"
+
+# current node conditions
+kubectl describe node archbook | grep -A 10 Conditions:
+
+# pods running on archbook
+kubectl get pods -A -o wide | grep archbook
+```
+
+#### Step 2 — Fill the disk
+
+```bash
+ssh archbook "fallocate -l 6G /tmp/bigfile"
+```
+
+`fallocate` allocates blocks instantly without writing data — much faster than `dd`. If the threshold isn't crossed, increase to 7G or 8G.
+
+#### Step 3 — Watch the kubelet react
+
+Run these in separate terminals:
+
+```bash
+# watch node conditions flip to DiskPressure=True
+kubectl get nodes -w
+
+# watch pods being evicted
+kubectl get pods -A -o wide -w
+
+# watch eviction events
+kubectl get events -A --field-selector reason=Evicting -w
+```
+
+The kubelet checks disk every 10s (housekeeping interval). Expect `DiskPressure=True` within ~30s and the node tainted with `node.kubernetes.io/disk-pressure:NoSchedule`.
+
+Eviction order follows QoS class:
+1. **BestEffort** — no requests/limits set
+2. **Burstable** — requests set but below limits
+3. **Guaranteed** — requests equal limits (evicted last)
+
+#### Step 4 — Inspect the evicted state
+
+```bash
+# confirm DiskPressure condition and taint
+kubectl describe node archbook | grep -E "DiskPressure|disk-pressure"
+
+# see where evicted pods rescheduled
+kubectl get pods -A -o wide | grep -v archbook
+```
+
+#### Step 5 — Recover
+
+```bash
+ssh archbook "rm /tmp/bigfile"
+```
+
+The kubelet detects the freed space within one housekeeping interval (~10s), removes the `DiskPressure` condition and the taint. No manual uncordon needed — the node becomes schedulable again automatically.
+
+```bash
+kubectl get nodes -w  # watch Ready condition return
+```
+
+**Expected result**: `DiskPressure` clears, taint removed, node schedulable again. Previously evicted pods may or may not migrate back depending on scheduler decisions.
