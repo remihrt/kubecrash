@@ -1,11 +1,8 @@
 {
   "name": "kubecrash",
   "updateRemoteUserUID": true,
-  "build": {
-    "context": "..",
-    "dockerfile": "Dockerfile"
-  },
-  "postCreateCommand": "scripts/setup.sh",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "postCreateCommand": ".devcontainer/post-create.sh",
   "mounts": [
     "source=${localWorkspaceFolder}/.kube,target=/home/vscode/.kube,type=bind",
     "source=${localWorkspaceFolder}/.ssh,target=/home/vscode/.ssh,type=bind",
