@@ -54,7 +54,7 @@ kubectl get pods -n podinfo -o wide -w
 kubectl uncordon archbook
 ```
 
-**Result**: zero errors. Pod rescheduled to `macmini` within seconds. Graceful eviction (SIGTERM + grace period) avoids the error spike seen with forced deletion. DaemonSet pods left in place. After uncordon, running pods don't migrate back — only new pods schedule on the restored node.
+**Result**: zero errors. Pod rescheduled to `omarchbook` within seconds. Graceful eviction (SIGTERM + grace period) avoids the error spike seen with forced deletion. DaemonSet pods left in place. After uncordon, running pods don't migrate back — only new pods schedule on the restored node.
 
 ---
 
@@ -67,7 +67,7 @@ kubectl uncordon archbook
 ssh homelab-1 "sudo mv /etc/kubernetes/manifests/etcd.yaml /tmp/etcd.yaml.bak"
 # verify quorum holds
 kubectl exec -n kube-system etcd-homelab-0 -- etcdctl \
-  --endpoints=https://192.168.1.10:2379,https://192.168.1.11:2379,https://192.168.1.13:2379 \
+  --endpoints=https://192.168.1.10:2379,https://192.168.1.11:2379,https://192.168.1.14:2379 \
   --cacert=/etc/kubernetes/pki/etcd/ca.crt \
   --cert=/etc/kubernetes/pki/etcd/server.crt \
   --key=/etc/kubernetes/pki/etcd/server.key \
@@ -140,27 +140,27 @@ ssh homelab-1 "sudo tc qdisc del dev wlan0 root"
 
 `homelab-1` was the etcd leader at the time. Each write requires leader→follower replication through the degraded link: ~400ms added per etcd commit (200ms each direction). `kubectl` commands noticeably slower, Locust p99 latency climbed.
 
-**Note**: `sch_netem` is missing on `archbook` (Arch Linux 7.0.2) — use a Debian or Fedora node.
+**Note**: `sch_netem` is missing on Arch Linux nodes (`archbook`, `omarchbook`) — use a Debian node (`homelab-0` or `homelab-1`).
 
 ### Network partition
 
 ```bash
 # isolate homelab-0 from the other two control planes
 ssh homelab-0 "sudo iptables -I INPUT -s 192.168.1.11 -j DROP && \
-  sudo iptables -I INPUT -s 192.168.1.13 -j DROP && \
+  sudo iptables -I INPUT -s 192.168.1.14 -j DROP && \
   sudo iptables -I OUTPUT -d 192.168.1.11 -j DROP && \
-  sudo iptables -I OUTPUT -d 192.168.1.13 -j DROP"
+  sudo iptables -I OUTPUT -d 192.168.1.14 -j DROP"
 
 # heal
 ssh homelab-0 "sudo iptables -D INPUT -s 192.168.1.11 -j DROP && \
-  sudo iptables -D INPUT -s 192.168.1.13 -j DROP && \
+  sudo iptables -D INPUT -s 192.168.1.14 -j DROP && \
   sudo iptables -D OUTPUT -d 192.168.1.11 -j DROP && \
-  sudo iptables -D OUTPUT -d 192.168.1.13 -j DROP"
+  sudo iptables -D OUTPUT -d 192.168.1.14 -j DROP"
 ```
 
 `homelab-0` held the VIP. Partition created a 1-vs-2 split.
 
-**Result**: cluster survived. Majority side (`homelab-1` + `macmini`) kept Raft quorum and claimed the VIP. `homelab-0` etcd stalled (1/3, below quorum). On heal, `homelab-0` etcd replayed missed entries automatically.
+**Result**: cluster survived. Majority side (`homelab-1` + `omarchbook`) kept Raft quorum and claimed the VIP. `homelab-0` etcd stalled (1/3, below quorum). On heal, `homelab-0` etcd replayed missed entries automatically.
 
 ---
 
@@ -200,7 +200,7 @@ Copy the snapshot to the devcontainer (scp works because `/var/lib/etcd` is on t
 ssh -t homelab-0 "sudo cp /var/lib/etcd/snapshot.db etcd-snapshot.db && sudo chown remi:remi etcd-snapshot.db" && \
 scp homelab-0:~/etcd-snapshot.db . && \
 scp etcd-snapshot.db homelab-1:~/ && \
-scp etcd-snapshot.db macmini:~/
+scp etcd-snapshot.db omarchbook:~/
 ```
 
 #### Step 2 — Create a canary resource (Scenario A)
@@ -217,7 +217,7 @@ kubectl get configmap chaos-canary
 Move static pod manifests away so kubelet tears down the containers. Do all three nodes before anything has time to react.
 
 ```bash
-for node in homelab-0 homelab-1 macmini; do
+for node in homelab-0 homelab-1 omarchbook; do
   ssh -t $node "sudo mv /etc/kubernetes/manifests/etcd.yaml /tmp/etcd.yaml.bak && \
              sudo mv /etc/kubernetes/manifests/kube-apiserver.yaml /tmp/kube-apiserver.yaml.bak"
 done
@@ -226,7 +226,7 @@ done
 Wait ~10s, then confirm the processes are gone:
 
 ```bash
-for node in homelab-0 homelab-1 macmini; do
+for node in homelab-0 homelab-1 omarchbook; do
   ssh -t $node "sudo crictl ps 2>/dev/null | grep -E 'etcd|apiserver' || echo '$node: clear'"
 done
 ```
@@ -234,7 +234,7 @@ done
 #### Step 4 — Wipe all etcd data
 
 ```bash
-for node in homelab-0 homelab-1 macmini; do
+for node in homelab-0 homelab-1 omarchbook; do
   ssh -t $node "sudo rm -rf /var/lib/etcd"
 done
 ```
@@ -246,7 +246,7 @@ There is no going back from this point without the snapshot.
 Each member needs its own restore call with a unique `--name` and `--initial-advertise-peer-urls`. All three share the same `--initial-cluster` and a new `--initial-cluster-token` (different from the original forces a fresh cluster identity and prevents stale peers from interfering).
 
 ```bash
-INITIAL_CLUSTER="homelab-0=https://192.168.1.10:2380,homelab-1=https://192.168.1.11:2380,macmini=https://192.168.1.13:2380"
+INITIAL_CLUSTER="homelab-0=https://192.168.1.10:2380,homelab-1=https://192.168.1.11:2380,omarchbook=https://192.168.1.14:2380"
 
 ssh -t homelab-0 "sudo etcdutl snapshot restore etcd-snapshot.db \
   --name homelab-0 \
@@ -262,11 +262,11 @@ ssh -t homelab-1 "sudo etcdutl snapshot restore etcd-snapshot.db \
   --initial-advertise-peer-urls https://192.168.1.11:2380 \
   --data-dir /var/lib/etcd"
 
-ssh -t macmini "sudo etcdutl snapshot restore etcd-snapshot.db \
-  --name macmini \
+ssh -t omarchbook "sudo etcdutl snapshot restore etcd-snapshot.db \
+  --name omarchbook \
   --initial-cluster ${INITIAL_CLUSTER} \
   --initial-cluster-token etcd-cluster-restored \
-  --initial-advertise-peer-urls https://192.168.1.13:2380 \
+  --initial-advertise-peer-urls https://192.168.1.14:2380 \
   --data-dir /var/lib/etcd"
 ```
 
@@ -275,7 +275,7 @@ ssh -t macmini "sudo etcdutl snapshot restore etcd-snapshot.db \
 Put the manifests back. kubelet picks them up within a few seconds.
 
 ```bash
-for node in homelab-0 homelab-1 macmini; do
+for node in homelab-0 homelab-1 omarchbook; do
   ssh -t $node "sudo mv /tmp/etcd.yaml.bak /etc/kubernetes/manifests/etcd.yaml && \
              sudo mv /tmp/kube-apiserver.yaml.bak /etc/kubernetes/manifests/kube-apiserver.yaml"
 done
@@ -295,7 +295,7 @@ kubectl get configmap chaos-canary && echo "UNEXPECTED: canary survived" || echo
 
 # etcd cluster health
 kubectl exec -n kube-system etcd-homelab-0 -- etcdctl \
-  --endpoints=https://192.168.1.10:2379,https://192.168.1.11:2379,https://192.168.1.13:2379 \
+  --endpoints=https://192.168.1.10:2379,https://192.168.1.11:2379,https://192.168.1.14:2379 \
   --cacert=/etc/kubernetes/pki/etcd/ca.crt \
   --cert=/etc/kubernetes/pki/etcd/server.crt \
   --key=/etc/kubernetes/pki/etcd/server.key \
@@ -421,7 +421,7 @@ CA cert: 10-year validity. Component certs: 1 year, issued by kubeadm at cluster
 Run on each node. `kubeadm certs renew all` reissues every component cert signed by the existing CA — no CA rotation, no downtime at this step:
 
 ```bash
-for node in homelab-0 homelab-1 macmini; do
+for node in homelab-0 homelab-1 omarchbook; do
   ssh -t $node "sudo kubeadm certs renew all"
 done
 ```
@@ -437,7 +437,7 @@ ssh homelab-0 "openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -dates"
 Kubeadm writes new cert files but running components hold the old certs in memory. Each component must be restarted. Do one node at a time to keep the cluster available during rotation.
 
 ```bash
-for node in homelab-0 homelab-1 macmini; do
+for node in homelab-0 homelab-1 omarchbook; do
   ssh $node "for f in /etc/kubernetes/manifests/*.yaml; do \
     sudo mv \$f /tmp/ && sleep 5 && sudo mv /tmp/\$(basename \$f) /etc/kubernetes/manifests/; \
   done"
@@ -459,7 +459,7 @@ kubectl get pods -n kube-system
 # logs and exec work on every node directly
 kubectl --server=https://192.168.1.10:6443 logs -n podinfo deployment/podinfo
 kubectl --server=https://192.168.1.11:6443 logs -n podinfo deployment/podinfo
-kubectl --server=https://192.168.1.13:6443 logs -n podinfo deployment/podinfo
+kubectl --server=https://192.168.1.14:6443 logs -n podinfo deployment/podinfo
 ```
 
 **Expected result**: all certs show a new `notAfter` ~1 year out, all commands succeed on every node directly.

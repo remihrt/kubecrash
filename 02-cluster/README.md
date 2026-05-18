@@ -15,9 +15,9 @@ Bootstrap a 4-node HA Kubernetes cluster using kubeadm.
 | archbook | 192.168.1.12 | `wlan0` | control-plane + worker *(init here first)* |
 | homelab-0 | 192.168.1.10 | `wlan0` | control-plane + worker |
 | homelab-1 | 192.168.1.11 | `wlan0` | control-plane + worker |
-| macmini | 192.168.1.13 | `end0` | worker |
+| omarchbook | 192.168.1.14 | `wlan0` | control-plane + worker |
 
-All nodes are on WiFi except macmini which is on Ethernet. kube-vip needs the correct interface per node.
+All nodes are on WiFi. kube-vip needs the correct interface per node.
 
 kube-vip provides a virtual IP (`192.168.1.201`) that floats across the 3 control plane nodes. Losing one control plane keeps the cluster running — etcd maintains quorum with 2 of 3.
 
@@ -168,18 +168,35 @@ Repeat for homelab-1.
 
 ---
 
-## Step 7 — Join worker node (macmini)
+## Step 7 — Join control plane node (omarchbook)
 
-**1. Generate a fresh join command** (from the devcontainer or archbook):
+**1. Generate a fresh join command** (from the devcontainer or archbook — certificate keys expire after 2 hours):
 ```bash
-kubeadm token create --print-join-command
+sudo kubeadm init phase upload-certs --upload-certs  # prints a new --certificate-key
+kubeadm token create --print-join-command        # prints token and CA hash
 ```
 
-**2. Run it on macmini** as root:
+**2. Generate the kube-vip manifest** on omarchbook (must exist before kubeadm join):
+```bash
+scp scripts/kube-vip.sh remi@omarchbook:~
+ssh omarchbook
+sudo INTERFACE=wlan0 VIP=192.168.1.201 bash kube-vip.sh
+```
+
+**3. Run the join command** on omarchbook as root:
 ```bash
 sudo kubeadm join 192.168.1.201:6443 \
   --token <token> \
-  --discovery-token-ca-cert-hash sha256:<hash>
+  --discovery-token-ca-cert-hash sha256:<hash> \
+  --control-plane \
+  --certificate-key <certificate-key>
+```
+
+**4. Copy the kubeconfig** on omarchbook:
+```bash
+mkdir -p $HOME/.kube
+sudo cp /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
 ```
 
 ---
@@ -189,7 +206,7 @@ sudo kubeadm join 192.168.1.201:6443 \
 By default kubeadm prevents workloads from scheduling on control plane nodes. Remove the taint:
 
 ```bash
-kubectl taint nodes archbook homelab-0 homelab-1 node-role.kubernetes.io/control-plane:NoSchedule-
+kubectl taint nodes homelab-0 homelab-1 omarchbook node-role.kubernetes.io/control-plane:NoSchedule-
 ```
 
 ---
